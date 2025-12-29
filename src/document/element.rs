@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::elements::{ElementData, ImageElement, ShapeElement, TextElement};
 
-use super::Transform2D;
+use super::{Color, Transform2D};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Element {
@@ -43,6 +43,10 @@ pub struct ElementUpdate {
     pub width: Option<f32>,
     pub height: Option<f32>,
     pub rotation: Option<f32>,
+    pub content: Option<String>,
+    pub font_family: Option<String>,
+    pub font_size: Option<f32>,
+    pub fill: Option<Color>,
 }
 
 impl ElementUpdate {
@@ -65,6 +69,21 @@ impl ElementUpdate {
         }
         if let Some(rotation) = self.rotation {
             element.transform.rotation = rotation;
+        }
+
+        if let ElementData::Text(text) = &mut element.data {
+            if let Some(content) = &self.content {
+                text.content = content.clone();
+            }
+            if let Some(font_family) = &self.font_family {
+                text.font_family = font_family.clone();
+            }
+            if let Some(font_size) = self.font_size {
+                text.font_size = font_size.max(1.0);
+            }
+            if let Some(fill) = self.fill {
+                text.fill = fill;
+            }
         }
     }
 }
