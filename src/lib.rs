@@ -2,17 +2,34 @@ mod document;
 mod elements;
 mod renderer;
 
-use document::{Command, Document, ElementUpdate, History, Transform2D};
-use elements::{ImageElement, ShapeElement, ShapeType, TextElement};
-use renderer::{Rect, Renderer};
+use document::{Command, Document, Element, ElementUpdate, History, Transform2D};
+use elements::{ElementData, ImageElement, ShapeElement, ShapeType, TextElement};
+use renderer::{Rect, RenderShape, Renderer, ShapeKind};
 use wasm_bindgen::prelude::*;
+
+#[derive(Clone, Copy, Debug)]
+enum Tool {
+    Select,
+    Shape,
+    Text,
+    Image,
+}
+
+#[derive(Clone, Debug)]
+struct TransformSnapshot {
+    element_id: u32,
+    before: Element,
+}
 
 #[wasm_bindgen]
 pub struct PigmoraEngine {
     renderer: Renderer,
     document: Document,
     history: History,
-    primary_element_id: Option<u32>,
+    selected_element_id: Option<u32>,
+    active_tool: Tool,
+    active_shape_type: ShapeType,
+    transform_snapshot: Option<TransformSnapshot>,
 }
 
 #[wasm_bindgen]
@@ -25,7 +42,10 @@ impl PigmoraEngine {
             renderer,
             document: Document::new(0, 0),
             history: History::new(),
-            primary_element_id: None,
+            selected_element_id: None,
+            active_tool: Tool::Select,
+            active_shape_type: ShapeType::Rect,
+            transform_snapshot: None,
         })
     }
 
@@ -36,7 +56,7 @@ impl PigmoraEngine {
 
     pub fn set_rect(&mut self, x: f32, y: f32, width: f32, height: f32) {
         let transform = Transform2D::new(x, y, width, height);
-        let element_id = match self.primary_element_id {
+        let element_id = match self.selected_element_id {
             Some(element_id) => {
                 self.document
                     .set_element_transform(element_id, transform);
@@ -44,11 +64,11 @@ impl PigmoraEngine {
             }
             None => {
                 let element_id = self.document.ensure_primary_shape(transform);
-                self.primary_element_id = Some(element_id);
+                self.selected_element_id = Some(element_id);
                 element_id
             }
         };
-        self.primary_element_id = Some(element_id);
+        self.selected_element_id = Some(element_id);
     }
 
     pub fn render(&mut self) {
@@ -67,15 +87,15 @@ impl PigmoraEngine {
         self.document = document;
         self.document.recalculate_next_id();
         self.history.clear();
-        self.primary_element_id = self.document.find_first_shape();
-        self.sync_renderer_rect();
+        self.selected_element_id = self.document.find_first_shape();
+        self.sync_selection();
         Ok(())
     }
 
     pub fn undo(&mut self) -> bool {
         let changed = self.history.undo(&mut self.document);
         if changed {
-            self.sync_renderer_rect();
+            self.sync_selection();
         }
         changed
     }
@@ -83,7 +103,7 @@ impl PigmoraEngine {
     pub fn redo(&mut self) -> bool {
         let changed = self.history.redo(&mut self.document);
         if changed {
-            self.sync_renderer_rect();
+            self.sync_selection();
         }
         changed
     }
@@ -107,8 +127,8 @@ impl PigmoraEngine {
             index,
             element,
         });
-        self.primary_element_id = Some(element_id);
-        self.sync_renderer_rect();
+        self.selected_element_id = Some(element_id);
+        self.sync_selection();
         Ok(element_id)
     }
 
@@ -127,8 +147,8 @@ impl PigmoraEngine {
             index,
             element,
         });
-        self.primary_element_id = Some(element_id);
-        self.sync_renderer_rect();
+        self.selected_element_id = Some(element_id);
+        self.sync_selection();
         Ok(element_id)
     }
 
@@ -147,8 +167,8 @@ impl PigmoraEngine {
             index,
             element,
         });
-        self.primary_element_id = Some(element_id);
-        self.sync_renderer_rect();
+        self.selected_element_id = Some(element_id);
+        self.sync_selection();
         Ok(element_id)
     }
 
@@ -159,10 +179,10 @@ impl PigmoraEngine {
                 index,
                 element,
             });
-            if self.primary_element_id == Some(element_id) {
-                self.primary_element_id = self.document.find_first_shape();
+            if self.selected_element_id == Some(element_id) {
+                self.selected_element_id = self.document.find_first_shape();
             }
-            self.sync_renderer_rect();
+            self.sync_selection();
             return true;
         }
         false
@@ -180,12 +200,118 @@ impl PigmoraEngine {
                 before,
                 after,
             });
-            if self.primary_element_id == Some(element_id) {
-                self.sync_renderer_rect();
+            if self.selected_element_id == Some(element_id) {
+                self.sync_selection();
             }
             return Ok(true);
         }
         Ok(false)
+    }
+
+    pub fn get_selected_id(&self) -> Option<u32> {
+        self.selected_element_id
+    }
+
+    pub fn set_active_tool(&mut self, tool: &str) -> Result<(), JsValue> {
+        self.active_tool = match tool {
+            "select" => Tool::Select,
+            "shape" => Tool::Shape,
+            "text" => Tool::Text,
+            "image" => Tool::Image,
+            _ => return Err(JsValue::from_str("Unknown tool")),
+        };
+        Ok(())
+    }
+
+    pub fn set_active_shape(&mut self, shape_type: &str) -> Result<(), JsValue> {
+        self.active_shape_type = parse_shape_type(shape_type)?;
+        Ok(())
+    }
+
+    pub fn select_at(&mut self, x: f32, y: f32) -> Option<u32> {
+        let hit = self.document.hit_test(x, y);
+        self.selected_element_id = hit;
+        hit
+    }
+
+    pub fn select_element(&mut self, element_id: u32) -> bool {
+        if self.document.get_element_by_id(element_id).is_some() {
+            self.selected_element_id = Some(element_id);
+            return true;
+        }
+        false
+    }
+
+    pub fn begin_transform(&mut self) -> bool {
+        let element_id = match self.selected_element_id {
+            Some(element_id) => element_id,
+            None => return false,
+        };
+        let element = match self.document.get_element_by_id(element_id) {
+            Some(element) => element.clone(),
+            None => return false,
+        };
+        self.transform_snapshot = Some(TransformSnapshot { element_id, before: element });
+        true
+    }
+
+    pub fn update_selected_transform(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> bool {
+        let element_id = match self.selected_element_id {
+            Some(element_id) => element_id,
+            None => return false,
+        };
+        if let Some(element) = self.document.get_element_by_id_mut(element_id) {
+            element.transform.x = x;
+            element.transform.y = y;
+            element.transform.width = width.max(1.0);
+            element.transform.height = height.max(1.0);
+            return true;
+        }
+        false
+    }
+
+    pub fn update_selected_text_size(&mut self, font_size: f32) -> bool {
+        let element_id = match self.selected_element_id {
+            Some(element_id) => element_id,
+            None => return false,
+        };
+        if let Some(element) = self.document.get_element_by_id_mut(element_id) {
+            if let ElementData::Text(text) = &mut element.data {
+                text.font_size = font_size.max(1.0);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn commit_transform(&mut self) -> bool {
+        let snapshot = match self.transform_snapshot.take() {
+            Some(snapshot) => snapshot,
+            None => return false,
+        };
+        let after = match self.document.get_element_by_id(snapshot.element_id) {
+            Some(element) => element.clone(),
+            None => return false,
+        };
+        if snapshot.before.transform == after.transform {
+            return false;
+        }
+        if let Some((layer_id, index)) = self.document.find_element_location(snapshot.element_id) {
+            self.history.record(Command::UpdateElement {
+                layer_id,
+                index,
+                before: snapshot.before,
+                after,
+            });
+            return true;
+        }
+        false
     }
 }
 
@@ -200,12 +326,10 @@ fn parse_shape_type(shape_type: &str) -> Result<ShapeType, JsValue> {
 }
 
 impl PigmoraEngine {
-    fn collect_rects(&self) -> (Vec<Rect>, Option<Rect>) {
+    fn collect_rects(&self) -> (Vec<RenderShape>, Option<Rect>) {
         let mut rects = Vec::new();
         let mut selected_rect = None;
-        let selected_id = self
-            .primary_element_id
-            .or_else(|| self.document.find_first_shape());
+        let selected_id = self.selected_element_id;
 
         for layer in &self.document.layers {
             if !layer.visible {
@@ -219,7 +343,23 @@ impl PigmoraEngine {
                     width: transform.width,
                     height: transform.height,
                 };
-                rects.push(rect);
+                if let ElementData::Shape(shape) = &element.data {
+                    let shape_kind = match shape.shape_type {
+                        ShapeType::Rect => ShapeKind::Rect,
+                        ShapeType::Ellipse => ShapeKind::Ellipse,
+                        ShapeType::Polygon => ShapeKind::Diamond,
+                        ShapeType::Line => ShapeKind::Rect,
+                    };
+                    rects.push(RenderShape {
+                        rect,
+                        shape: shape_kind,
+                    });
+                } else if matches!(element.data, ElementData::Image(_)) {
+                    rects.push(RenderShape {
+                        rect,
+                        shape: ShapeKind::Rect,
+                    });
+                }
                 if Some(element.id) == selected_id {
                     selected_rect = Some(rect);
                 }
@@ -229,14 +369,13 @@ impl PigmoraEngine {
         (rects, selected_rect)
     }
 
-    fn sync_renderer_rect(&mut self) {
-        let element_id = self
-            .primary_element_id
-            .or_else(|| self.document.find_first_shape());
-        if let Some(element_id) = element_id {
-            if self.document.get_element_transform(element_id).is_some() {
-                self.primary_element_id = Some(element_id);
-            }
+    fn sync_selection(&mut self) {
+        let element_id = match self.selected_element_id {
+            Some(element_id) => element_id,
+            None => return,
+        };
+        if self.document.get_element_transform(element_id).is_none() {
+            self.selected_element_id = self.document.find_first_shape();
         }
     }
 }
