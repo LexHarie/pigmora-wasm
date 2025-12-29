@@ -152,10 +152,17 @@ impl PigmoraEngine {
         Ok(element_id)
     }
 
-    pub fn add_image(&mut self, _data: &[u8], x: f32, y: f32) -> Result<u32, JsValue> {
-        let transform = Transform2D::new(x, y, 320.0, 200.0);
+    pub fn add_image(
+        &mut self,
+        source: String,
+        width: f32,
+        height: f32,
+        x: f32,
+        y: f32,
+    ) -> Result<u32, JsValue> {
+        let transform = Transform2D::new(x, y, width.max(1.0), height.max(1.0));
         let element_id = self.document.next_element_id();
-        let image = ImageElement::new();
+        let image = ImageElement::new(source);
         let element = document::Element::image(element_id, "Image", image, transform);
         let layer_id = self.document.active_layer_id;
         let index = self
@@ -206,6 +213,44 @@ impl PigmoraEngine {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    pub fn apply_filter(&mut self, element_id: u32, filter: &str, value: f32) -> bool {
+        let location = self.document.find_element_location(element_id);
+        let (before, after) = {
+            let element = match self.document.get_element_by_id_mut(element_id) {
+                Some(element) => element,
+                None => return false,
+            };
+            let before = element.clone();
+            let updated = match &mut element.data {
+                ElementData::Image(image) => {
+                    match filter {
+                        "brightness" => image.filters.brightness = value.clamp(0.0, 2.0),
+                        "contrast" => image.filters.contrast = value.clamp(0.0, 2.0),
+                        "saturation" => image.filters.saturation = value.clamp(0.0, 2.0),
+                        _ => return false,
+                    }
+                    true
+                }
+                _ => false,
+            };
+            if !updated {
+                return false;
+            }
+            let after = element.clone();
+            (before, after)
+        };
+
+        if let Some((layer_id, index)) = location {
+            self.history.record(Command::UpdateElement {
+                layer_id,
+                index,
+                before,
+                after,
+            });
+        }
+        true
     }
 
     pub fn get_selected_id(&self) -> Option<u32> {
@@ -353,11 +398,6 @@ impl PigmoraEngine {
                     rects.push(RenderShape {
                         rect,
                         shape: shape_kind,
-                    });
-                } else if matches!(element.data, ElementData::Image(_)) {
-                    rects.push(RenderShape {
-                        rect,
-                        shape: ShapeKind::Rect,
                     });
                 }
                 if Some(element.id) == selected_id {

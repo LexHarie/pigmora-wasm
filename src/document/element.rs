@@ -47,6 +47,10 @@ pub struct ElementUpdate {
     pub font_family: Option<String>,
     pub font_size: Option<f32>,
     pub fill: Option<Color>,
+    pub image_source: Option<String>,
+    pub image_brightness: Option<f32>,
+    pub image_contrast: Option<f32>,
+    pub image_saturation: Option<f32>,
 }
 
 impl ElementUpdate {
@@ -83,6 +87,21 @@ impl ElementUpdate {
             }
             if let Some(fill) = self.fill {
                 text.fill = fill;
+            }
+        }
+
+        if let ElementData::Image(image) = &mut element.data {
+            if let Some(source) = &self.image_source {
+                image.source = source.clone();
+            }
+            if let Some(brightness) = self.image_brightness {
+                image.filters.brightness = brightness.clamp(0.0, 2.0);
+            }
+            if let Some(contrast) = self.image_contrast {
+                image.filters.contrast = contrast.clamp(0.0, 2.0);
+            }
+            if let Some(saturation) = self.image_saturation {
+                image.filters.saturation = saturation.clamp(0.0, 2.0);
             }
         }
     }
