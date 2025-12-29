@@ -3,11 +3,24 @@ mod webgl;
 use wasm_bindgen::JsValue;
 
 #[derive(Clone, Copy, Debug)]
+pub enum ShapeKind {
+    Rect = 0,
+    Ellipse = 1,
+    Diamond = 2,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub struct Rect {
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct RenderShape {
+    pub rect: Rect,
+    pub shape: ShapeKind,
 }
 
 impl Rect {
@@ -38,7 +51,7 @@ impl Renderer {
         self.webgl.resize(width, height);
     }
 
-    pub fn render(&self, rects: &[Rect], selected: Option<Rect>) {
+    pub fn render(&self, rects: &[RenderShape], selected: Option<Rect>) {
         if self.width == 0 || self.height == 0 {
             return;
         }
