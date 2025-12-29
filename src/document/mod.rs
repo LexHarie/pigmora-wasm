@@ -175,6 +175,52 @@ impl Document {
         None
     }
 
+    pub fn get_element_by_id(&self, element_id: u32) -> Option<&Element> {
+        for layer in &self.layers {
+            if let Some(element) = layer.elements.iter().find(|el| el.id == element_id) {
+                return Some(element);
+            }
+        }
+        None
+    }
+
+    pub fn get_element_by_id_mut(&mut self, element_id: u32) -> Option<&mut Element> {
+        for layer in &mut self.layers {
+            if let Some(element) = layer.elements.iter_mut().find(|el| el.id == element_id) {
+                return Some(element);
+            }
+        }
+        None
+    }
+
+    pub fn find_element_location(&self, element_id: u32) -> Option<(u32, usize)> {
+        for layer in &self.layers {
+            if let Some(index) = layer.elements.iter().position(|el| el.id == element_id) {
+                return Some((layer.id, index));
+            }
+        }
+        None
+    }
+
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<u32> {
+        for layer in self.layers.iter().rev() {
+            if !layer.visible || layer.locked {
+                continue;
+            }
+            for element in layer.elements.iter().rev() {
+                let transform = element.transform;
+                if x >= transform.x
+                    && x <= transform.x + transform.width
+                    && y >= transform.y
+                    && y <= transform.y + transform.height
+                {
+                    return Some(element.id);
+                }
+            }
+        }
+        None
+    }
+
     pub fn find_first_shape(&self) -> Option<u32> {
         for layer in &self.layers {
             for element in &layer.elements {
