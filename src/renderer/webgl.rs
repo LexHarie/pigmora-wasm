@@ -5,7 +5,7 @@ use web_sys::{
     WebGlVertexArrayObject,
 };
 
-use super::Rect;
+use super::{Rect, RenderShape, ShapeKind};
 
 pub struct WebGlRenderer {
     gl: WebGl2RenderingContext,
@@ -19,6 +19,7 @@ pub struct WebGlRenderer {
     uniform_origin: Option<WebGlUniformLocation>,
     uniform_size: Option<WebGlUniformLocation>,
     uniform_color: Option<WebGlUniformLocation>,
+    uniform_shape: Option<WebGlUniformLocation>,
 }
 
 impl WebGlRenderer {
@@ -121,6 +122,7 @@ impl WebGlRenderer {
         let uniform_origin = gl.get_uniform_location(&program, "u_origin");
         let uniform_size = gl.get_uniform_location(&program, "u_size");
         let uniform_color = gl.get_uniform_location(&program, "u_color");
+        let uniform_shape = gl.get_uniform_location(&program, "u_shape");
 
         gl.disable(WebGl2RenderingContext::DEPTH_TEST);
         gl.disable(WebGl2RenderingContext::CULL_FACE);
@@ -136,6 +138,7 @@ impl WebGlRenderer {
             uniform_origin,
             uniform_size,
             uniform_color,
+            uniform_shape,
         })
     }
 
@@ -144,7 +147,13 @@ impl WebGlRenderer {
             .viewport(0, 0, width as i32, height as i32);
     }
 
-    pub fn render_scene(&self, width: u32, height: u32, rects: &[Rect], selected: Option<Rect>) {
+    pub fn render_scene(
+        &self,
+        width: u32,
+        height: u32,
+        rects: &[RenderShape],
+        selected: Option<Rect>,
+    ) {
         self.gl
             .clear(WebGl2RenderingContext::COLOR_BUFFER_BIT);
 
@@ -157,11 +166,12 @@ impl WebGlRenderer {
 
         self.set_resolution(width, height);
 
-        for (index, rect) in rects.iter().enumerate() {
-            if !rect.is_valid() {
+        for (index, shape) in rects.iter().enumerate() {
+            if !shape.rect.is_valid() {
                 continue;
             }
-            self.set_rect_uniforms(rect);
+            self.set_rect_uniforms(&shape.rect);
+            self.set_shape(shape.shape);
             let tint = (index % 4) as f32 * 0.04;
             self.set_color(0.86 - tint, 0.42 + tint, 0.25 + tint, 1.0);
             self.gl
@@ -202,6 +212,12 @@ impl WebGlRenderer {
         if let Some(color_loc) = &self.uniform_color {
             self.gl
                 .uniform4f(Some(color_loc), r, g, b, a);
+        }
+    }
+
+    fn set_shape(&self, shape: ShapeKind) {
+        if let Some(shape_loc) = &self.uniform_shape {
+            self.gl.uniform1i(Some(shape_loc), shape as i32);
         }
     }
 
@@ -254,9 +270,9 @@ impl WebGlRenderer {
     }
 
     fn create_program(gl: &WebGl2RenderingContext) -> Result<WebGlProgram, JsValue> {
-        let vertex_source = "#version 300 es\nin vec2 a_position;\nuniform vec2 u_origin;\nuniform vec2 u_size;\nuniform vec2 u_resolution;\nvoid main() {\n  vec2 position = u_origin + (a_position * u_size);\n  vec2 zeroToOne = position / u_resolution;\n  vec2 zeroToTwo = zeroToOne * 2.0;\n  vec2 clip = zeroToTwo - 1.0;\n  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);\n}\n";
+        let vertex_source = "#version 300 es\nin vec2 a_position;\nuniform vec2 u_origin;\nuniform vec2 u_size;\nuniform vec2 u_resolution;\nout vec2 v_local;\nvoid main() {\n  v_local = a_position;\n  vec2 position = u_origin + (a_position * u_size);\n  vec2 zeroToOne = position / u_resolution;\n  vec2 zeroToTwo = zeroToOne * 2.0;\n  vec2 clip = zeroToTwo - 1.0;\n  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);\n}\n";
 
-        let fragment_source = "#version 300 es\nprecision mediump float;\nuniform vec4 u_color;\nout vec4 out_color;\nvoid main() {\n  out_color = u_color;\n}\n";
+        let fragment_source = "#version 300 es\nprecision mediump float;\nuniform vec4 u_color;\nuniform int u_shape;\nin vec2 v_local;\nout vec4 out_color;\nvoid main() {\n  vec2 centered = v_local - vec2(0.5);\n  if (u_shape == 1) {\n    vec2 norm = centered / vec2(0.5);\n    if (dot(norm, norm) > 1.0) {\n      discard;\n    }\n  } else if (u_shape == 2) {\n    float diamond = abs(centered.x) + abs(centered.y);\n    if (diamond > 0.5) {\n      discard;\n    }\n  }\n  out_color = u_color;\n}\n";
 
         let vertex_shader = Self::compile_shader(
             gl,
